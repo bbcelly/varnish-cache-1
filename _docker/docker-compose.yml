@@ -6,3 +6,8 @@ services:
       - ../:/data/varnish
     ports:
       - "9998-9999:9998-9999"
+  check:
+    build: ./build
+    volumes:
+      - ../:/data/varnish
+    command: make -j4 check
