@@ -54,4 +54,4 @@ RUN chmod a+x /usr/local/sbin/install_and_run.sh
 
 EXPOSE 9998-9999
 
-CMD /usr/local/sbin/build.sh && /usr/local/sbin/install_and_run.sh && sh
+CMD /usr/local/sbin/build.sh && /usr/local/sbin/install_and_run.sh && bash
