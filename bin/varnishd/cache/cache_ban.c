@@ -46,6 +46,7 @@ struct banhead_s ban_head = VTAILQ_HEAD_INITIALIZER(ban_head);
 struct ban * volatile ban_start;
 
 static pthread_t ban_thread;
+static pthread_t ban_thread_cleaner;
 static int ban_holds;
 uint64_t bans_persisted_bytes;
 uint64_t bans_persisted_fragmentation;
@@ -110,8 +111,10 @@ BAN_Release(void)
 	assert(ban_holds > 0);
 	ban_holds--;
 	Lck_Unlock(&ban_mtx);
-	if (ban_holds == 0)
+	if (ban_holds == 0) {
 		WRK_BgThread(&ban_thread, "ban-lurker", ban_lurker, NULL);
+		WRK_BgThread(&ban_thread_cleaner, "ban-cleaner", ban_cleaner, NULL);
+	}
 }
 
 /*--------------------------------------------------------------------
@@ -804,6 +807,7 @@ BAN_Init(void)
 	bp = BAN_Build();
 	AN(bp);
 	AZ(pthread_cond_init(&ban_lurker_cond, NULL));
+	AZ(pthread_cond_init(&ban_cleaner_cond, NULL));
 	AZ(BAN_Commit(bp));
 	Lck_Lock(&ban_mtx);
 	ban_mark_completed(VTAILQ_FIRST(&ban_head));
@@ -829,6 +833,7 @@ BAN_Shutdown(void)
 	Lck_Unlock(&ban_mtx);
 
 	AZ(pthread_join(ban_thread, &status));
+	AZ(pthread_join(ban_thread_cleaner, &status));
 	AZ(status);
 
 	Lck_Lock(&ban_mtx);
