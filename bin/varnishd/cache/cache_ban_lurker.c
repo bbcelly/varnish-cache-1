@@ -52,6 +52,27 @@ ban_kick_lurker(void)
 	AZ(pthread_cond_signal(&ban_lurker_cond));
 }
 
+void ban_remove_and_move_freelist(struct ban *b, struct banhead_s *freelist)
+{
+	Lck_AssertHeld(&ban_mtx);
+	assert(VTAILQ_EMPTY(&b->objcore));
+	if (b->flags & BANS_FLAG_COMPLETED)
+		VSC_C_main->bans_completed--;
+	if (b->flags & BANS_FLAG_OBJ)
+		VSC_C_main->bans_obj--;
+	if (b->flags & BANS_FLAG_REQ)
+		VSC_C_main->bans_req--;
+	VSC_C_main->bans--;
+	VSC_C_main->bans_deleted++;
+	VTAILQ_REMOVE(&ban_head, b, list);
+	VTAILQ_INSERT_TAIL(freelist, b, list);
+	bans_persisted_fragmentation +=
+			ban_len(b->spec);
+	VSC_C_main->bans_persisted_fragmentation =
+			bans_persisted_fragmentation;
+	ban_info_drop(b->spec, ban_len(b->spec));
+}
+
 /*
  * ban_cleantail: clean the tail of the ban list up to the first ban which is
  * still referenced. For already completed bans, we update statistics
@@ -75,22 +96,7 @@ ban_cleantail(const struct ban *victim)
 	do {
 		b = VTAILQ_LAST(&ban_head, banhead_s);
 		if (b != VTAILQ_FIRST(&ban_head) && b->refcount == 0) {
-			assert(VTAILQ_EMPTY(&b->objcore));
-			if (b->flags & BANS_FLAG_COMPLETED)
-				VSC_C_main->bans_completed--;
-			if (b->flags & BANS_FLAG_OBJ)
-				VSC_C_main->bans_obj--;
-			if (b->flags & BANS_FLAG_REQ)
-				VSC_C_main->bans_req--;
-			VSC_C_main->bans--;
-			VSC_C_main->bans_deleted++;
-			VTAILQ_REMOVE(&ban_head, b, list);
-			VTAILQ_INSERT_TAIL(&freelist, b, list);
-			bans_persisted_fragmentation +=
-			    ban_len(b->spec);
-			VSC_C_main->bans_persisted_fragmentation =
-			    bans_persisted_fragmentation;
-			ban_info_drop(b->spec, ban_len(b->spec));
+			ban_remove_and_move_freelist(b, &freelist);
 		} else {
 			b = NULL;
 		}
