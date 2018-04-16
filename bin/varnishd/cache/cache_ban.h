@@ -101,11 +101,13 @@ struct ban {
 VTAILQ_HEAD(banhead_s,ban);
 
 bgthread_t ban_lurker;
+bgthread_t ban_cleaner;
 extern struct lock ban_mtx;
 extern int ban_shutdown;
 extern struct banhead_s ban_head;
 extern struct ban * volatile ban_start;
 extern pthread_cond_t	ban_lurker_cond;
+extern pthread_cond_t	ban_cleaner_cond;
 extern uint64_t bans_persisted_bytes;
 extern uint64_t bans_persisted_fragmentation;
 
