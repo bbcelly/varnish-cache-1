@@ -236,6 +236,23 @@ PARAM(
 )
 
 PARAM(
+    /* name */	ban_cleaner_sleep,
+    /* typ */	timeout,
+    /* min */	"0",
+    /* max */	NULL,
+    /* default */	"0",
+    /* units */	"seconds",
+    /* flags */	0,
+    /* s-text */
+    "How long the ban cleaner sleeps after each round of cleaning "
+    "completed bans."
+    "  Use this to pace the ban-cleaner if it eats too many resources.\n"
+    "A value of zero will disable the ban cleaner entirely.",
+    /* l-text */	"",
+    /* func */	NULL
+)
+
+PARAM(
 	/* name */	first_byte_timeout,
 	/* typ */	timeout,
 	/* min */	"0",
