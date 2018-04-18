@@ -44,7 +44,7 @@ RUN apt-get update \
 WORKDIR /data/varnish
 
 # Prepare build script
-RUN echo 'sh autogen.sh && sh configure && make' > /usr/local/sbin/build.sh
+RUN echo 'sh autogen.sh && sh configure --prefix=/usr --localstatedir=/var/lib && make' > /usr/local/sbin/build.sh
 RUN chmod a+x /usr/local/sbin/build.sh
 
 RUN echo 'mkdir -p /usr/local/etc/varnish/ && make install && ldconfig && echo '"'"'vcl 4.0;\n\nbackend default { .host = "127.0.0.1"; .port = "9999"; }\n\nsub vcl_recv { if(req.url ~ "^/data$") { return (synth(750)); } set req.url = "/data"; return(hash); }\n\nsub vcl_synth { synthetic({"OKK-Celly"});return (deliver); }\n\nsub vcl_backend_response{ set beresp.ttl=10s; set beresp.http.X-test="test"; }'"'"'>/usr/local/etc/varnish/default.vcl && varnishd -f /usr/local/etc/varnish/default.vcl -s malloc,1G -T 127.0.0.1:9998 -a 0.0.0.0:9999 -i varnish1' > /usr/local/sbin/install_and_run.sh
