@@ -45,7 +45,7 @@ static unsigned ban_generation;
 pthread_cond_t	ban_lurker_cond;
 pthread_cond_t	ban_cleaner_cond;
 
-struct banhead_s obans;
+struct banhead_s obans = VTAILQ_HEAD_INITIALIZER(obans);
 struct lock oban_create_mtx;
 struct lock cleaner_mtx;
 volatile int cleaner_locks_initialize = 0;
@@ -329,6 +329,22 @@ ban_cleaner_work()
         return (dt);
     }
 
+    Lck_Lock(&cleaner_mtx);
+    Lck_Lock(&oban_create_mtx);
+    first_ban = VTAILQ_FIRST(&obans);
+    if (first_ban) {
+        VTAILQ_FOREACH_REVERSE_SAFE(b, &obans, banhead_s, l_list, bln) {
+            if (b->flags & BANS_FLAG_COMPLETED && b->refcount == 0) {
+                VTAILQ_REMOVE(&obans, b, l_list);
+                Lck_Lock(&ban_mtx);
+                ban_remove_and_move_freelist(b, &freelist);
+                Lck_Unlock(&ban_mtx);
+                removed_bans ++;
+            }
+        }
+    }
+    Lck_Unlock(&oban_create_mtx);
+
     Lck_Lock(&ban_mtx);
     first_ban = VTAILQ_FIRST(&ban_head);
     Lck_Unlock(&ban_mtx);
@@ -342,6 +358,7 @@ ban_cleaner_work()
             removed_bans ++;
         }
     }
+    Lck_Unlock(&cleaner_mtx);
 
     VTAILQ_FOREACH_SAFE(b, &freelist, list, bln) {
         BAN_Free(b);
@@ -403,7 +420,9 @@ ban_lurker_work(struct worker *wrk, struct vsl_log *vsl)
 	Lck_Unlock(&ban_mtx);
 	d = VTIM_real() - cache_param->ban_lurker_age;
 	bd = NULL;
+    Lck_Lock(&oban_create_mtx);
 	VTAILQ_INIT(&obans);
+    Lck_Unlock(&oban_create_mtx);
 	for (; b != NULL; b = VTAILQ_NEXT(b, list)) {
 		if (bd != NULL && bd != b)
 			ban_lurker_test_ban(wrk, vsl, b, &obans, bd,
@@ -419,7 +438,9 @@ ban_lurker_work(struct worker *wrk, struct vsl_log *vsl)
 		count++;
 		n = ban_time(b->spec) - d;
 		if (n < 0) {
+            Lck_Lock(&cleaner_mtx);
 			VTAILQ_INSERT_TAIL(&obans, b, l_list);
+            Lck_Unlock(&cleaner_mtx);
 			if (bd == NULL)
 				bd = b;
 		} else if (n < dt) {
