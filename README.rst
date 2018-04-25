@@ -1,6 +1,8 @@
 Varnish Cache
 =============
 
+[![Build Status](https://travis-ci.org/bbcelly/varnish-cache-1.svg?branch=5.2_ls)](https://travis-ci.org/bbcelly/varnish-cache-1)
+
 This is Varnish Cache, the high-performance HTTP accelerator.
 
 Documentation and additional information about Varnish is available on
