@@ -46,6 +46,9 @@ pthread_cond_t	ban_lurker_cond;
 pthread_cond_t	ban_cleaner_cond;
 
 struct banhead_s obans;
+struct lock oban_create_mtx;
+struct lock cleaner_mtx;
+volatile int cleaner_locks_initialize = 0;
 
 void
 ban_kick_lurker(void)
@@ -300,6 +303,18 @@ ban_lurker_test_ban(struct worker *wrk, struct vsl_log *vsl, struct ban *bt,
  * Ban cleaner thread
  */
 
+void init_cleaner_locks()
+{
+    Lck_Lock(&ban_mtx);
+    if (!cleaner_locks_initialize)
+    {
+        cleaner_locks_initialize = 1;
+        Lck_New(&oban_create_mtx, Lck_CreateClass("lck_oban_create"));
+        Lck_New(&cleaner_mtx, Lck_CreateClass("lck_cleaner"));
+    }
+    Lck_Unlock(&ban_mtx);
+}
+
 static double
 ban_cleaner_work()
 {
@@ -341,6 +356,7 @@ ban_cleaner_work()
 void * __match_proto__(bgthread_t)
 ban_cleaner(struct worker *wrk, void *priv)
 {
+    init_cleaner_locks();
     volatile double d;
 
     CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
@@ -455,6 +471,7 @@ ban_lurker_work(struct worker *wrk, struct vsl_log *vsl)
 void * v_matchproto_(bgthread_t)
 ban_lurker(struct worker *wrk, void *priv)
 {
+    init_cleaner_locks();
 	struct vsl_log vsl;
 	volatile double d;
 	unsigned gen = ban_generation + 1;
