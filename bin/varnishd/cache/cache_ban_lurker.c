@@ -44,6 +44,8 @@ static unsigned ban_generation;
 pthread_cond_t	ban_lurker_cond;
 pthread_cond_t	ban_cleaner_cond;
 
+struct banhead_s obans;
+
 void
 ban_kick_lurker(void)
 {
@@ -307,7 +309,6 @@ static double
 ban_lurker_work(struct worker *wrk, struct vsl_log *vsl)
 {
 	struct ban *b, *bd;
-	struct banhead_s obans;
 	double d, dt, n;
 	unsigned count = 0, cutoff = UINT_MAX;
 
