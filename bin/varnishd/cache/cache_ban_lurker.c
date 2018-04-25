@@ -296,6 +296,67 @@ ban_lurker_test_ban(struct worker *wrk, struct vsl_log *vsl, struct ban *bt,
 }
 
 /*--------------------------------------------------------------------
+ * Ban cleaner thread
+ */
+
+static double
+ban_cleaner_work()
+{
+    struct ban *b, *bln, *first_ban;
+    struct banhead_s freelist = VTAILQ_HEAD_INITIALIZER(freelist);
+    double dt;
+    int removed_bans = 0;
+
+    dt = 68.931;		// Random, non-magic
+
+    if (cache_param->ban_cleaner_sleep == 0) {
+        return (dt);
+    }
+
+    Lck_Lock(&ban_mtx);
+    first_ban = VTAILQ_FIRST(&ban_head);
+    Lck_Unlock(&ban_mtx);
+    VTAILQ_FOREACH_REVERSE_SAFE(b, &ban_head, banhead_s, list, bln) {
+        if (b == first_ban)
+            break;
+        if (b->flags & BANS_FLAG_COMPLETED && b->refcount == 0) {
+            Lck_Lock(&ban_mtx);
+            ban_remove_and_move_freelist(b, &freelist);
+            Lck_Unlock(&ban_mtx);
+            removed_bans ++;
+        }
+    }
+
+    VTAILQ_FOREACH_SAFE(b, &freelist, list, bln) {
+        BAN_Free(b);
+    }
+
+    if (removed_bans)
+        return cache_param->ban_cleaner_sleep;
+    else
+        return dt;
+}
+
+void * __match_proto__(bgthread_t)
+ban_cleaner(struct worker *wrk, void *priv)
+{
+    volatile double d;
+
+    CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
+    AZ(priv);
+
+    while (!ban_shutdown) {
+        d = ban_cleaner_work();
+        d += VTIM_real();
+        Lck_Lock(&ban_mtx);
+        (void)Lck_CondWait(&ban_cleaner_cond, &ban_mtx, d);
+        Lck_Unlock(&ban_mtx);
+    }
+    pthread_exit(0);
+    NEEDLESS(return NULL);
+}
+
+/*--------------------------------------------------------------------
  * Ban lurker thread:
  *
  * try to move ocs as far up the ban list as possible (to bd)
@@ -396,63 +457,6 @@ ban_lurker(struct worker *wrk, void *priv)
 			ban_batch = 0;
 		}
 		gen = ban_generation;
-		Lck_Unlock(&ban_mtx);
-	}
-	pthread_exit(0);
-	NEEDLESS(return NULL);
-}
-
-static double
-ban_cleaner_work()
-{
-	struct ban *b, *bln, *first_ban;
-	struct banhead_s freelist = VTAILQ_HEAD_INITIALIZER(freelist);
-	double dt;
-	int removed_bans = 0;
-
-	dt = 68.931;		// Random, non-magic
-
-	if (cache_param->ban_cleaner_sleep == 0) {
-		return (dt);
-	}
-
-	Lck_Lock(&ban_mtx);
-	first_ban = VTAILQ_FIRST(&ban_head);
-	Lck_Unlock(&ban_mtx);
-	VTAILQ_FOREACH_REVERSE_SAFE(b, &ban_head, banhead_s, list, bln) {
-		if (b == first_ban)
-			break;
-		if (b->flags & BANS_FLAG_COMPLETED && b->refcount == 0) {
-			Lck_Lock(&ban_mtx);
-			ban_remove_and_move_freelist(b, &freelist);
-			Lck_Unlock(&ban_mtx);
-			removed_bans ++;
-		}
-	}
-
-	VTAILQ_FOREACH_SAFE(b, &freelist, list, bln) {
-		BAN_Free(b);
-	}
-
-	if (removed_bans)
-		return cache_param->ban_cleaner_sleep;
-	else
-		return dt;
-}
-
-void * __match_proto__(bgthread_t)
-ban_cleaner(struct worker *wrk, void *priv)
-{
-	volatile double d;
-
-	CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
-	AZ(priv);
-
-	while (!ban_shutdown) {
-		d = ban_cleaner_work();
-		d += VTIM_real();
-		Lck_Lock(&ban_mtx);
-		(void)Lck_CondWait(&ban_cleaner_cond, &ban_mtx, d);
 		Lck_Unlock(&ban_mtx);
 	}
 	pthread_exit(0);
