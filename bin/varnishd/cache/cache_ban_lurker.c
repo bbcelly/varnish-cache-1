@@ -309,8 +309,8 @@ void init_cleaner_locks()
     if (!cleaner_locks_initialize)
     {
         cleaner_locks_initialize = 1;
-        Lck_New(&oban_create_mtx, Lck_CreateClass("lck_oban_create"));
-        Lck_New(&cleaner_mtx, Lck_CreateClass("lck_cleaner"));
+		Lck_New(&oban_create_mtx, lck_oban);
+		Lck_New(&cleaner_mtx, lck_cleaner);
     }
     Lck_Unlock(&ban_mtx);
 }
