@@ -353,6 +353,7 @@ ban_cleaner_work()
 	Lck_Unlock(&ban_mtx);
     Lck_Unlock(&cleaner_mtx);
 
+    VTIM_sleep(5.0);
     VTAILQ_FOREACH_SAFE(b, &freelist, list, bln) {
         BAN_Free(b);
     }
