@@ -576,7 +576,10 @@ BAN_CheckObject(struct worker *wrk, struct objcore *oc, struct req *req)
 	 * This loop is safe without locks, because we know we hold
 	 * a refcount on a ban somewhere in the list and we do not
 	 * inspect the list past that ban.
+	 * ----
+	 * Not anymore. Ban cleaner goes further.
 	 */
+    Lck_Lock(&ban_mtx);
 	tests = 0;
 	for (b = b0; b != bn; b = VTAILQ_NEXT(b, list)) {
 		CHECK_OBJ_NOTNULL(b, BAN_MAGIC);
@@ -586,7 +589,7 @@ BAN_CheckObject(struct worker *wrk, struct objcore *oc, struct req *req)
 			break;
 	}
 
-	Lck_Lock(&ban_mtx);
+//	Lck_Lock(&ban_mtx);
 	bn->refcount--;
 	VSC_C_main->bans_tested++;
 	VSC_C_main->bans_tests_tested += tests;
