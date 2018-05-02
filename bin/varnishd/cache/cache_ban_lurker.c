@@ -60,7 +60,7 @@ ban_kick_lurker(void)
 	AZ(pthread_cond_signal(&ban_cleaner_cond));
 }
 
-void ban_remove_and_move_freelist(struct ban *b, struct banhead_s *freelist)
+static void ban_remove_and_move_freelist(struct ban *b, struct banhead_s *freelist)
 {
 	Lck_AssertHeld(&ban_mtx);
 	assert(VTAILQ_EMPTY(&b->objcore));
@@ -212,7 +212,7 @@ ban_lurker_getfirst(struct vsl_log *vsl, struct ban *bt)
 
 static void
 ban_lurker_test_ban(struct worker *wrk, struct vsl_log *vsl, struct ban *bt,
-    struct banhead_s *obans, struct ban *bd, int kill)
+    struct banhead_s *obans_l, struct ban *bd, int kill)
 {
 	struct ban *bl, *bln;
 	struct objcore *oc;
@@ -241,7 +241,7 @@ ban_lurker_test_ban(struct worker *wrk, struct vsl_log *vsl, struct ban *bt,
 		if (oc == NULL)
 			return;
 		i = 0;
-		VTAILQ_FOREACH_REVERSE_SAFE(bl, obans, banhead_s, l_list, bln) {
+		VTAILQ_FOREACH_REVERSE_SAFE(bl, obans_l, banhead_s, l_list, bln) {
 			if (oc->ban != bt) {
 				/*
 				 * HSH_Lookup() grabbed this oc, killed
@@ -251,7 +251,7 @@ ban_lurker_test_ban(struct worker *wrk, struct vsl_log *vsl, struct ban *bt,
 			}
 			if (bl->flags & BANS_FLAG_COMPLETED) {
 				/* Ban was overtaken by new (dup) ban */
-				VTAILQ_REMOVE(obans, bl, l_list);
+				VTAILQ_REMOVE(obans_l, bl, l_list);
 				continue;
 			}
 			if (kill == 1)
@@ -303,7 +303,7 @@ ban_lurker_test_ban(struct worker *wrk, struct vsl_log *vsl, struct ban *bt,
  * Ban cleaner thread
  */
 
-void init_cleaner_locks()
+static void init_cleaner_locks(void)
 {
     Lck_Lock(&ban_mtx);
     if (!cleaner_locks_initialize)
@@ -316,7 +316,7 @@ void init_cleaner_locks()
 }
 
 static double
-ban_cleaner_work()
+ban_cleaner_work(void)
 {
     struct ban *b, *bln, *first_ban;
     struct banhead_s freelist = VTAILQ_HEAD_INITIALIZER(freelist);
@@ -364,7 +364,7 @@ ban_cleaner_work()
         return dt;
 }
 
-void * __match_proto__(bgthread_t)
+void * v_matchproto_(bgthread_t)
 ban_cleaner(struct worker *wrk, void *priv)
 {
     init_cleaner_locks();
