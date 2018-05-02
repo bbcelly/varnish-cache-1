@@ -192,7 +192,8 @@ V1F_FetchRespHdr(struct busyobj *bo)
 			htc->doclose = SC_RX_OVERFLOW;
 			break;
 		default:
-			VSLb(bo->vsl, SLT_FetchError, "HTC status %d", hs);
+			VSLb(bo->vsl, SLT_FetchError, "HTC %s (%d)",
+			     HTC_Status(hs), hs);
 			htc->doclose = SC_RX_BAD;
 			break;
 		}
@@ -216,7 +217,11 @@ V1F_FetchRespHdr(struct busyobj *bo)
 	assert(bo->vfc->resp == bo->beresp);
 	if (bo->htc->body_status != BS_NONE &&
 	    bo->htc->body_status != BS_ERROR)
-		(void)V1F_Setup_Fetch(bo->vfc, bo->htc);
+		if (V1F_Setup_Fetch(bo->vfc, bo->htc)) {
+			VSLb(bo->vsl, SLT_FetchError, "overflow");
+			htc->doclose = SC_RX_OVERFLOW;
+			return (-1);
+		}
 
 	return (0);
 }

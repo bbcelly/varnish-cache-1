@@ -32,7 +32,6 @@
 #include <string.h>
 
 #include "cache/cache.h"
-#include "cache/cache_director.h"
 
 #include "vend.h"
 #include "vsha256.h"
@@ -47,6 +46,12 @@ struct vmod_directors_hash {
 	struct vdir				*vd;
 };
 
+static const struct vdi_methods vmod_hash_methods[1] = {{
+	.magic =		VDI_METHODS_MAGIC,
+	.type =			"hash",
+}};
+
+
 VCL_VOID v_matchproto_()
 vmod_hash__init(VRT_CTX, struct vmod_directors_hash **rrp,
     const char *vcl_name)
@@ -59,7 +64,7 @@ vmod_hash__init(VRT_CTX, struct vmod_directors_hash **rrp,
 	ALLOC_OBJ(rr, VMOD_DIRECTORS_HASH_MAGIC);
 	AN(rr);
 	*rrp = rr;
-	vdir_new(&rr->vd, "hash", vcl_name, NULL, NULL, rr);
+	vdir_new(ctx, &rr->vd, vcl_name, vmod_hash_methods, rr);
 }
 
 VCL_VOID v_matchproto_()
@@ -123,6 +128,6 @@ vmod_hash_backend(VRT_CTX, struct vmod_directors_hash *rr,
 	r = vbe32dec(sha256);
 	r = scalbn(r, -32);
 	assert(r >= 0 && r <= 1.0);
-	be = vdir_pick_be(rr->vd, r, ctx->bo);
+	be = vdir_pick_be(ctx, rr->vd, r);
 	return (be);
 }

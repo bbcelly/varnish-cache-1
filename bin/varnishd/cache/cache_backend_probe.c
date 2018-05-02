@@ -49,7 +49,6 @@
 #include "vtcp.h"
 #include "vtim.h"
 
-#include "cache_director.h"
 #include "cache_backend.h"
 #include "cache_tcp_pool.h"
 
@@ -168,25 +167,22 @@ vbp_update_backend(struct vbp_target *vt)
 		assert(i < sizeof bits);
 
 		if (vt->good >= vt->threshold) {
-			if (vt->backend->director->health)
-				logmsg = "Still healthy";
-			else {
+			if (vt->backend->director->sick) {
 				logmsg = "Back healthy";
-				vt->backend->director->health_changed =
-				     VTIM_real();
+				VRT_SetHealth(vt->backend->director, 1);
+			} else {
+				logmsg = "Still healthy";
 			}
-			vt->backend->director->health = 1;
 		} else {
-			if (vt->backend->director->health) {
-				logmsg = "Went sick";
-				vt->backend->director->health_changed =
-				     VTIM_real();
-			} else
+			if (vt->backend->director->sick) {
 				logmsg = "Still sick";
-			vt->backend->director->health = 0;
+			} else {
+				logmsg = "Went sick";
+				VRT_SetHealth(vt->backend->director, 0);
+			}
 		}
 		VSL(SLT_Backend_health, 0, "%s %s %s %u %u %u %.6f %.6f %s",
-		    vt->backend->director->display_name, logmsg, bits,
+		    vt->backend->director->vcl_name, logmsg, bits,
 		    vt->good, vt->threshold, vt->window,
 		    vt->last, vt->avg, vt->resp_buf);
 		VBE_SetHappy(vt->backend, vt->happy);
@@ -458,56 +454,54 @@ vbp_thread(struct worker *wrk, void *priv)
  */
 
 static void
-vbp_bitmap(struct cli *cli, char c, uint64_t map, const char *lbl)
+vbp_bitmap(struct vsb *vsb, char c, uint64_t map, const char *lbl)
 {
 	int i;
 	uint64_t u = (1ULL << 63);
 
-	VCLI_Out(cli, "  ");
+	VSB_printf(vsb, "  ");
 	for (i = 0; i < 64; i++) {
 		if (map & u)
-			VCLI_Out(cli, "%c", c);
+			VSB_putc(vsb, c);
 		else
-			VCLI_Out(cli, "-");
+			VSB_putc(vsb, '-');
 		map <<= 1;
 	}
-	VCLI_Out(cli, " %s\n", lbl);
+	VSB_printf(vsb, " %s\n", lbl);
 }
 
 /*lint -e{506} constant value boolean */
 /*lint -e{774} constant value boolean */
-static void
-vbp_health_one(struct cli *cli, const struct vbp_target *vt)
+void
+VBP_Status(struct vsb *vsb, const struct backend *be, int details)
 {
+	struct vbp_target *vt;
+	char buf[12];
 
-	VCLI_Out(cli,
-	    "  Current states  good: %2u threshold: %2u window: %2u\n",
+	CHECK_OBJ_NOTNULL(be, BACKEND_MAGIC);
+	vt = be->probe;
+	CHECK_OBJ_NOTNULL(vt, VBP_TARGET_MAGIC);
+
+	if (!details) {
+		bprintf(buf, "%d/%d %s", vt->good, vt->window,
+		    vt->backend->director->sick ? "bad" : "good");
+		VSB_printf(vsb, "%-10s", buf);
+		return;
+	}
+
+	VSB_printf(vsb,
+	    "\nCurrent states  good: %2u threshold: %2u window: %2u\n",
 	    vt->good, vt->threshold, vt->window);
-	VCLI_Out(cli,
+	VSB_printf(vsb,
 	    "  Average response time of good probes: %.6f\n", vt->avg);
-	VCLI_Out(cli,
+	VSB_printf(vsb,
 	    "  Oldest ======================"
 	    "============================ Newest\n");
 
 #define BITMAP(n, c, t, b)					\
 		if ((vt->n != 0) || (b))			\
-			vbp_bitmap(cli, (c), vt->n, (t));
+			vbp_bitmap(vsb, (c), vt->n, (t));
 #include "tbl/backend_poll.h"
-}
-
-void
-VBP_Status(struct cli *cli, const struct backend *be, int details)
-{
-	struct vbp_target *vt;
-
-	CHECK_OBJ_NOTNULL(be, BACKEND_MAGIC);
-	vt = be->probe;
-	CHECK_OBJ_NOTNULL(vt, VBP_TARGET_MAGIC);
-	VCLI_Out(cli, "%d/%d", vt->good, vt->window);
-	if (details) {
-		VCLI_Out(cli, "\n");
-		vbp_health_one(cli, vt);
-	}
 }
 
 /*--------------------------------------------------------------------
@@ -638,7 +632,7 @@ VBP_Remove(struct backend *be)
 	CHECK_OBJ_NOTNULL(vt, VBP_TARGET_MAGIC);
 
 	Lck_Lock(&vbp_mtx);
-	be->director->health = 1;
+	VRT_SetHealth(be->director, 1);
 	be->probe = NULL;
 	vt->backend = NULL;
 	if (vt->running) {

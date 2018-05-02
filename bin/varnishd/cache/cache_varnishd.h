@@ -116,10 +116,10 @@ struct busyobj *VBO_GetBusyObj(struct worker *, const struct req *);
 void VBO_ReleaseBusyObj(struct worker *wrk, struct busyobj **busyobj);
 
 /* cache_director.c */
-int VDI_GetHdr(struct worker *, struct busyobj *);
-int VDI_GetBody(struct worker *, struct busyobj *);
-const struct suckaddr *VDI_GetIP(struct worker *, struct busyobj *);
-void VDI_Finish(struct worker *wrk, struct busyobj *bo);
+int VDI_GetHdr(struct busyobj *);
+int VDI_GetBody(struct busyobj *);
+VCL_IP VDI_GetIP(struct busyobj *);
+void VDI_Finish(struct busyobj *bo);
 enum sess_close VDI_Http1Pipe(struct req *, struct busyobj *);
 void VDI_Panic(const struct director *, struct vsb *, const char *nm);
 void VDI_Event(const struct director *d, enum vcl_event_e ev);
@@ -201,6 +201,7 @@ enum vbf_fetch_mode_e {
 };
 void VBF_Fetch(struct worker *wrk, struct req *req,
     struct objcore *oc, struct objcore *oldoc, enum vbf_fetch_mode_e);
+const char *VBF_Get_Filter_List(struct busyobj *);
 
 /* cache_fetch_proc.c */
 void VFP_Init(void);
@@ -342,6 +343,7 @@ void SES_Ref(struct sess *sp);
 void SES_Rel(struct sess *sp);
 int SES_Reschedule_Req(struct req *, enum task_prio);
 
+const char * HTC_Status(enum htc_status_e);
 void HTC_RxInit(struct http_conn *htc, struct ws *ws);
 void HTC_RxPipeline(struct http_conn *htc, void *);
 enum htc_status_e HTC_RxStuff(struct http_conn *, htc_complete_f *,
@@ -355,15 +357,8 @@ void SES_Set_String_Attr(struct sess *sp, enum sess_attr a, const char *src);
 
 
 enum htc_status_e {
-	HTC_S_JUNK =		-5,
-	HTC_S_CLOSE =		-4,
-	HTC_S_TIMEOUT =		-3,
-	HTC_S_OVERFLOW =	-2,
-	HTC_S_EOF =		-1,
-	HTC_S_EMPTY =		 0,
-	HTC_S_MORE =		 1,
-	HTC_S_COMPLETE =	 2,
-	HTC_S_IDLE =		 3,
+#define HTC_STATUS(e, n, s, l) HTC_S_ ## e = n,
+#include "tbl/htc.h"
 };
 
 /* cache_shmlog.c */
@@ -384,7 +379,7 @@ enum vry_finish_flag { KEEP, DISCARD };
 void VRY_Finish(struct req *req, enum vry_finish_flag);
 
 /* cache_vcl.c */
-struct director *VCL_DefaultDirector(const struct vcl *);
+VCL_BACKEND VCL_DefaultDirector(const struct vcl *);
 const struct vrt_backend_probe *VCL_DefaultProbe(const struct vcl *);
 void VCL_Init(void);
 void VCL_Panic(struct vsb *, const struct vcl *);
@@ -394,6 +389,9 @@ void VCL_Refresh(struct vcl **);
 void VCL_Rel(struct vcl **);
 const char *VCL_Return_Name(unsigned);
 const char *VCL_Method_Name(unsigned);
+void VCL_Bo2Ctx(struct vrt_ctx *, struct busyobj *);
+void VCL_Req2Ctx(struct vrt_ctx *, struct req *);
+
 #define VCL_MET_MAC(l,u,t,b) \
     void VCL_##l##_method(struct vcl *, struct worker *, struct req *, \
 	struct busyobj *bo, void *specific);
@@ -403,6 +401,10 @@ const char *VCL_Method_Name(unsigned);
 typedef int vcl_be_func(struct cli *, struct director *, void *);
 
 int VCL_IterDirector(struct cli *, const char *, vcl_be_func *, void *);
+
+/* cache_vcl_vrt.c */
+void VCL_VRT_Init(void);
+int VCL_StackVFP(struct vfp_ctx *, const struct vcl *, const char *);
 
 /* cache_vrt.c */
 void VRTPRIV_init(struct vrt_privs *privs);

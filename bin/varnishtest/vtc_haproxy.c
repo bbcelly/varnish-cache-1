@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h> /* for MUSL (mode_t) */
 #include <unistd.h>
 
 #include "vtc.h"
@@ -56,7 +57,7 @@ struct haproxy {
 	struct vtclog		*vl;
 	VTAILQ_ENTRY(haproxy)	list;
 
-	char			*filename;
+	const char		*filename;
 	struct vsb		*args;
 	int			opt_worker;
 	int			opt_daemon;
@@ -72,7 +73,7 @@ struct haproxy {
 	int			expect_signal;
 	int			its_dead_jim;
 
-	const char		*cli_fn;
+	char			*cli_fn;
 
 	char			*workdir;
 	struct vsb		*msgs;
@@ -152,7 +153,7 @@ haproxy_new(const char *name)
 
 	h->filename = getenv(HAPROXY_PROGRAM_ENV_VAR);
 	if (h->filename == NULL)
-		REPLACE(h->filename, "haproxy");
+		h->filename = "haproxy";
 
 	bprintf(buf, "${tmpdir}/%s", name);
 	vsb = macro_expand(h->vl, buf);
@@ -196,6 +197,9 @@ haproxy_delete(struct haproxy *h)
 
 	free(h->name);
 	free(h->workdir);
+	free(h->cli_fn);
+	free(h->cfg_fn);
+	free(h->pid_fn);
 	VSB_destroy(&h->args);
 
 	/* XXX: MEMLEAK (?) */
@@ -324,15 +328,16 @@ haproxy_wait(struct haproxy *h)
 	sig = SIGINT;
 	n = 0;
 	vtc_log(h->vl, 2, "Stop HAproxy pid=%ld", (long)h->pid);
-	while (!h->opt_check_mode && !h->its_dead_jim) {
+	while (h->opt_daemon || (!h->opt_check_mode && !h->its_dead_jim)) {
 		assert(h->pid > 0);
 		if (n == 0) {
-			i= kill(h->pid, sig);
-			vtc_log(h->vl, 4,
-			    "Kill(%d)=%d: %s", sig, i, strerror(errno));
-			h->expect_signal = -sig;
+			i = kill(h->pid, sig);
+			if (i == 0)
+				h->expect_signal = -sig;
 			if (i && errno == ESRCH)
 				break;
+			vtc_log(h->vl, 4,
+			    "Kill(%d)=%d: %s", sig, i, strerror(errno));
 		}
 		usleep(100000);
 		if (++n == 20) {
@@ -388,6 +393,7 @@ haproxy_build_backends(const struct haproxy *h, const char *vsb_data)
 		if (err != NULL)
 			vtc_fatal(h->vl,
 			    "Create listen socket failed: %s", err);
+		assert(sock > 0);
 
 		VTCP_myname(sock, addr, sizeof addr, port, sizeof port);
 		bprintf(buf, "%s_%s", h->name, p);

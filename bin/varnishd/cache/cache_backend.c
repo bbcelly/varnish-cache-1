@@ -40,7 +40,6 @@
 #include "vtcp.h"
 #include "vtim.h"
 
-#include "cache_director.h"
 #include "cache_backend.h"
 #include "cache_tcp_pool.h"
 #include "cache_transport.h"
@@ -88,9 +87,9 @@ vbe_dir_getfd(struct worker *wrk, struct backend *bp, struct busyobj *bo,
 	CHECK_OBJ_NOTNULL(bp, BACKEND_MAGIC);
 	AN(bp->vsc);
 
-	if (!VDI_Healthy(bp->director, NULL)) {
+	if (bp->director->sick) {
 		VSLb(bo->vsl, SLT_FetchError,
-		     "backend %s: unhealthy", bp->director->display_name);
+		     "backend %s: unhealthy", VRT_BACKEND_string(bp->director));
 		// XXX: per backend stats ?
 		VSC_C_main->backend_unhealthy++;
 		return (NULL);
@@ -98,7 +97,7 @@ vbe_dir_getfd(struct worker *wrk, struct backend *bp, struct busyobj *bo,
 
 	if (bp->max_connections > 0 && bp->n_conn >= bp->max_connections) {
 		VSLb(bo->vsl, SLT_FetchError,
-		     "backend %s: busy", bp->director->display_name);
+		     "backend %s: busy", VRT_BACKEND_string(bp->director));
 		// XXX: per backend stats ?
 		VSC_C_main->backend_busy++;
 		return (NULL);
@@ -118,7 +117,7 @@ vbe_dir_getfd(struct worker *wrk, struct backend *bp, struct busyobj *bo,
 	if (pfd == NULL) {
 		VSLb(bo->vsl, SLT_FetchError,
 		     "backend %s: fail errno %d (%s)",
-		     bp->director->display_name, errno, strerror(errno));
+		     VRT_BACKEND_string(bp->director), errno, strerror(errno));
 		// XXX: Per backend stats ?
 		VSC_C_main->backend_fail++;
 		bo->htc = NULL;
@@ -141,7 +140,7 @@ vbe_dir_getfd(struct worker *wrk, struct backend *bp, struct busyobj *bo,
 	PFD_LocalName(pfd, abuf1, sizeof abuf1, pbuf1, sizeof pbuf1);
 	PFD_RemoteName(pfd, abuf2, sizeof abuf2, pbuf2, sizeof pbuf2);
 	VSLb(bo->vsl, SLT_BackendOpen, "%d %s %s %s %s %s",
-	    *fdp, bp->director->display_name, abuf2, pbuf2, abuf1, pbuf1);
+	    *fdp, VRT_BACKEND_string(bp->director), abuf2, pbuf2, abuf1, pbuf1);
 
 	INIT_OBJ(bo->htc, HTTP_CONN_MAGIC);
 	bo->htc->priv = pfd;
@@ -153,27 +152,16 @@ vbe_dir_getfd(struct worker *wrk, struct backend *bp, struct busyobj *bo,
 	return (pfd);
 }
 
-static unsigned v_matchproto_(vdi_healthy_f)
-vbe_dir_healthy(const struct director *d, const struct busyobj *bo,
-    double *changed)
-{
-	struct backend *be;
-
-	CHECK_OBJ_NOTNULL(d, DIRECTOR_MAGIC);
-	CHECK_OBJ_ORNULL(bo, BUSYOBJ_MAGIC);
-	CAST_OBJ_NOTNULL(be, d->priv, BACKEND_MAGIC);
-	return (VDI_Healthy(be->director, changed));
-}
-
 static void v_matchproto_(vdi_finish_f)
-vbe_dir_finish(const struct director *d, struct worker *wrk,
-    struct busyobj *bo)
+vbe_dir_finish(VRT_CTX, VCL_BACKEND d)
 {
 	struct backend *bp;
+	struct busyobj *bo;
 	struct pfd *pfd;
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	CHECK_OBJ_NOTNULL(d, DIRECTOR_MAGIC);
-	CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
+	bo = ctx->bo;
 	CHECK_OBJ_NOTNULL(bo, BUSYOBJ_MAGIC);
 	CAST_OBJ_NOTNULL(bp, d->priv, BACKEND_MAGIC);
 
@@ -185,17 +173,17 @@ vbe_dir_finish(const struct director *d, struct worker *wrk,
 		    bo->htc->doclose == SC_RX_TIMEOUT);
 	if (bo->htc->doclose != SC_NULL || bp->proxy_header != 0) {
 		VSLb(bo->vsl, SLT_BackendClose, "%d %s", *PFD_Fd(pfd),
-		    bp->director->display_name);
+		    VRT_BACKEND_string(bp->director));
 		VTP_Close(&pfd);
 		AZ(pfd);
 		Lck_Lock(&bp->mtx);
 	} else {
 		assert (PFD_State(pfd) == PFD_STATE_USED);
 		VSLb(bo->vsl, SLT_BackendReuse, "%d %s", *PFD_Fd(pfd),
-		    bp->director->display_name);
+		    VRT_BACKEND_string(bp->director));
 		Lck_Lock(&bp->mtx);
 		VSC_C_main->backend_recycle++;
-		VTP_Recycle(wrk, &pfd);
+		VTP_Recycle(bo->wrk, &pfd);
 	}
 	assert(bp->n_conn > 0);
 	bp->n_conn--;
@@ -208,17 +196,21 @@ vbe_dir_finish(const struct director *d, struct worker *wrk,
 }
 
 static int v_matchproto_(vdi_gethdrs_f)
-vbe_dir_gethdrs(const struct director *d, struct worker *wrk,
-    struct busyobj *bo)
+vbe_dir_gethdrs(VRT_CTX, VCL_BACKEND d)
 {
 	int i, extrachance = 1;
 	struct backend *bp;
 	struct pfd *pfd;
+	struct busyobj *bo;
+	struct worker *wrk;
 	char abuf[VTCP_ADDRBUFSIZE], pbuf[VTCP_PORTBUFSIZE];
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	CHECK_OBJ_NOTNULL(d, DIRECTOR_MAGIC);
-	CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
+	bo = ctx->bo;
 	CHECK_OBJ_NOTNULL(bo, BUSYOBJ_MAGIC);
+	wrk = ctx->bo->wrk;
+	CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
 	CAST_OBJ_NOTNULL(bp, d->priv, BACKEND_MAGIC);
 
 	/*
@@ -266,7 +258,7 @@ vbe_dir_gethdrs(const struct director *d, struct worker *wrk,
 		 * that the backend closed it before we got the bereq to it.
 		 * In that case do a single automatic retry if req.body allows.
 		 */
-		vbe_dir_finish(d, wrk, bo);
+		vbe_dir_finish(ctx, d);
 		AZ(bo->htc);
 		if (i < 0 || extrachance == 0)
 			break;
@@ -279,25 +271,24 @@ vbe_dir_gethdrs(const struct director *d, struct worker *wrk,
 	return (-1);
 }
 
-static const struct suckaddr * v_matchproto_(vdi_getip_f)
-vbe_dir_getip(const struct director *d, struct worker *wrk,
-    struct busyobj *bo)
+static VCL_IP v_matchproto_(vdi_getip_f)
+vbe_dir_getip(VRT_CTX, VCL_BACKEND d)
 {
 	struct pfd *pfd;
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	CHECK_OBJ_NOTNULL(d, DIRECTOR_MAGIC);
-	CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
-	CHECK_OBJ_NOTNULL(bo, BUSYOBJ_MAGIC);
-	CHECK_OBJ_NOTNULL(bo->htc, HTTP_CONN_MAGIC);
-	pfd = bo->htc->priv;
+	CHECK_OBJ_NOTNULL(ctx->bo, BUSYOBJ_MAGIC);
+	CHECK_OBJ_NOTNULL(ctx->bo->htc, HTTP_CONN_MAGIC);
+	pfd = ctx->bo->htc->priv;
 
 	return (VTP_getip(pfd));
 }
 
 /*--------------------------------------------------------------------*/
 
-static enum sess_close
-vbe_dir_http1pipe(const struct director *d, struct req *req, struct busyobj *bo)
+static enum sess_close v_matchproto_(vdi_http1pipe_f)
+vbe_dir_http1pipe(VRT_CTX, VCL_BACKEND d)
 {
 	int i;
 	enum sess_close retval;
@@ -306,37 +297,38 @@ vbe_dir_http1pipe(const struct director *d, struct req *req, struct busyobj *bo)
 	struct pfd *pfd;
 	char abuf[VTCP_ADDRBUFSIZE], pbuf[VTCP_PORTBUFSIZE];
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	CHECK_OBJ_NOTNULL(d, DIRECTOR_MAGIC);
-	CHECK_OBJ_NOTNULL(req, REQ_MAGIC);
-	CHECK_OBJ_NOTNULL(bo, BUSYOBJ_MAGIC);
+	CHECK_OBJ_NOTNULL(ctx->req, REQ_MAGIC);
+	CHECK_OBJ_NOTNULL(ctx->bo, BUSYOBJ_MAGIC);
 	CAST_OBJ_NOTNULL(bp, d->priv, BACKEND_MAGIC);
 
 	memset(&v1a, 0, sizeof v1a);
 
 	/* This is hackish... */
-	v1a.req = req->acct.req_hdrbytes;
-	req->acct.req_hdrbytes = 0;
+	v1a.req = ctx->req->acct.req_hdrbytes;
+	ctx->req->acct.req_hdrbytes = 0;
 
-	req->res_mode = RES_PIPE;
+	ctx->req->res_mode = RES_PIPE;
 
-	pfd = vbe_dir_getfd(req->wrk, bp, bo, 0);
+	pfd = vbe_dir_getfd(ctx->req->wrk, bp, ctx->bo, 0);
 
 	if (pfd == NULL) {
 		retval = SC_TX_ERROR;
 	} else {
-		CHECK_OBJ_NOTNULL(bo->htc, HTTP_CONN_MAGIC);
+		CHECK_OBJ_NOTNULL(ctx->bo->htc, HTTP_CONN_MAGIC);
 		PFD_RemoteName(pfd, abuf, sizeof abuf, pbuf, sizeof pbuf);
-		i = V1F_SendReq(req->wrk, bo, &v1a.bereq, &v1a.out, 1, abuf,
-				pbuf);
-		VSLb_ts_req(req, "Pipe", W_TIM_real(req->wrk));
+		i = V1F_SendReq(ctx->req->wrk, ctx->bo,
+		    &v1a.bereq, &v1a.out, 1, abuf, pbuf);
+		VSLb_ts_req(ctx->req, "Pipe", W_TIM_real(ctx->req->wrk));
 		if (i == 0)
-			V1P_Process(req, *PFD_Fd(pfd), &v1a);
-		VSLb_ts_req(req, "PipeSess", W_TIM_real(req->wrk));
-		bo->htc->doclose = SC_TX_PIPE;
-		vbe_dir_finish(d, req->wrk, bo);
+			V1P_Process(ctx->req, *PFD_Fd(pfd), &v1a);
+		VSLb_ts_req(ctx->req, "PipeSess", W_TIM_real(ctx->req->wrk));
+		ctx->bo->htc->doclose = SC_TX_PIPE;
+		vbe_dir_finish(ctx, d);
 		retval = SC_TX_PIPE;
 	}
-	V1P_Charge(req, &v1a, bp->vsc);
+	V1P_Charge(ctx->req, &v1a, bp->vsc);
 	return (retval);
 }
 
@@ -406,20 +398,47 @@ vbe_panic(const struct director *d, struct vsb *vsb)
 	CHECK_OBJ_NOTNULL(d, DIRECTOR_MAGIC);
 	CAST_OBJ_NOTNULL(bp, d->priv, BACKEND_MAGIC);
 
-	VSB_printf(vsb, "display_name = %s,\n", bp->director->display_name);
 	if (bp->ipv4_addr != NULL)
 		VSB_printf(vsb, "ipv4 = %s,\n", bp->ipv4_addr);
 	if (bp->ipv6_addr != NULL)
 		VSB_printf(vsb, "ipv6 = %s,\n", bp->ipv6_addr);
 	VSB_printf(vsb, "port = %s,\n", bp->port);
 	VSB_printf(vsb, "hosthdr = %s,\n", bp->hosthdr);
-	VSB_printf(vsb, "health = %s,\n",
-	    bp->director->health ? "healthy" : "sick");
-	VSB_printf(vsb, "admin_health = %s, changed = %f,\n",
-	    VDI_Ahealth(bp->director),
-	    bp->director->health_changed);
 	VSB_printf(vsb, "n_conn = %u,\n", bp->n_conn);
 }
+
+/*--------------------------------------------------------------------
+ */
+
+static void
+vbe_list(const struct director *d, struct vsb *vsb, int vflag, int pflag)
+{
+	struct backend *bp;
+
+	CHECK_OBJ_NOTNULL(d, DIRECTOR_MAGIC);
+	CAST_OBJ_NOTNULL(bp, d->priv, BACKEND_MAGIC);
+
+	if (bp->probe != NULL)
+		VBP_Status(vsb, bp, vflag | pflag);
+	else
+		VSB_printf(vsb, "%-10s", d->sick ? "sick" : "healthy");
+}
+
+/*--------------------------------------------------------------------
+ */
+
+static const struct vdi_methods vbe_methods[1] = {{
+	.magic =		VDI_METHODS_MAGIC,
+	.type =			"backend",
+	.http1pipe =		vbe_dir_http1pipe,
+	.gethdrs =		vbe_dir_gethdrs,
+	.getip =		vbe_dir_getip,
+	.finish =		vbe_dir_finish,
+	.event =		vbe_dir_event,
+	.destroy =		vbe_destroy,
+	.panic =		vbe_panic,
+	.list =			vbe_list,
+}};
 
 /*--------------------------------------------------------------------
  * Create a new static or dynamic director::backend instance.
@@ -432,15 +451,13 @@ VRT_backend_vsm_need(VRT_CTX)
 	return (VRT_VSC_Overhead(VSC_vbe_size));
 }
 
-struct director * v_matchproto_()
+VCL_BACKEND v_matchproto_()
 VRT_new_backend_clustered(VRT_CTX, struct vsmw_cluster *vc,
     const struct vrt_backend *vrt)
 {
 	struct backend *be;
-	struct director *d;
 	struct vcl *vcl;
 	const struct vrt_backend_probe *vbp;
-	int retval;
 
 	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	CHECK_OBJ_NOTNULL(vrt, VRT_BACKEND_MAGIC);
@@ -466,23 +483,17 @@ VRT_new_backend_clustered(VRT_CTX, struct vsmw_cluster *vc,
 #undef DA
 #undef DN
 
-	d = be->director;
-	INIT_OBJ(d, DIRECTOR_MAGIC);
-	d->priv = be;
-	d->name = "backend";
-	d->vcl_name = be->vcl_name;
-	d->http1pipe = vbe_dir_http1pipe;
-	d->healthy = vbe_dir_healthy;
-	d->gethdrs = vbe_dir_gethdrs;
-	d->getip = vbe_dir_getip;
-	d->finish = vbe_dir_finish;
-	d->event = vbe_dir_event;
-	d->panic = vbe_panic;
-	d->destroy = vbe_destroy;
+	be->vsc = VSC_vbe_New(vc, &be->vsc_seg,
+	    "%s.%s", VCL_Name(ctx->vcl), vrt->vcl_name);
+	AN(be->vsc);
 
-	d->health = 1;
-	d->health_changed = VTIM_real();
-	d->admin_health = VDI_AH_PROBE;
+	be->director = VRT_AddDirector(ctx, vbe_methods, be,
+	    "%s", vrt->vcl_name);
+	if (be->director == NULL) {
+		// XXX
+		VRT_delete_backend(ctx, &be->director);
+		return (NULL);
+	}
 
 	vbp = vrt->probe;
 	if (vbp == NULL)
@@ -500,21 +511,10 @@ VRT_new_backend_clustered(VRT_CTX, struct vsmw_cluster *vc,
 		VBP_Insert(be, vbp, be->tcp_pool);
 	}
 
-	be->vsc = VSC_vbe_New(vc, &be->vsc_seg,
-	    "%s.%s", VCL_Name(ctx->vcl), vrt->vcl_name);
-	AN(be->vsc);
-
-	retval = VCL_AddDirector(ctx->vcl, d, vrt->vcl_name);
-
-	if (retval == 0)
-		return (d);
-
-	VRT_delete_backend(ctx, &d);
-	AZ(d);
-	return (NULL);
+	return (be->director);
 }
 
-struct director * v_matchproto_()
+VCL_BACKEND v_matchproto_()
 VRT_new_backend(VRT_CTX, const struct vrt_backend *vrt)
 {
 	return (VRT_new_backend_clustered(ctx, NULL, vrt));
@@ -526,17 +526,16 @@ VRT_new_backend(VRT_CTX, const struct vrt_backend *vrt)
  */
 
 void
-VRT_delete_backend(VRT_CTX, struct director **dp)
+VRT_delete_backend(VRT_CTX, VCL_BACKEND *dp)
 {
-	struct director *d;
+	VCL_BACKEND d;
 	struct backend *be;
 
 	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	TAKE_OBJ_NOTNULL(d, dp, DIRECTOR_MAGIC);
 	CAST_OBJ_NOTNULL(be, d->priv, BACKEND_MAGIC);
 	Lck_Lock(&be->mtx);
-	be->director->admin_health = VDI_AH_DELETED;
-	be->director->health_changed = VTIM_real();
+	VRT_DisableDirector(be->director);
 	be->cooled = VTIM_real() + 60.;
 	Lck_Unlock(&be->mtx);
 	Lck_Lock(&backends_mtx);
@@ -576,7 +575,7 @@ VBE_Poll(void)
 		if (be->n_conn > 0)
 			continue;
 		Lck_Unlock(&backends_mtx);
-		VCL_DelDirector(be->director);
+		VRT_DelDirector(&be->director);
 		Lck_Lock(&backends_mtx);
 	}
 	Lck_Unlock(&backends_mtx);

@@ -198,6 +198,7 @@ VFP_Suck(struct vfp_ctx *vc, void *p, ssize_t *lp)
 
 /*--------------------------------------------------------------------
  */
+
 struct vfp_entry *
 VFP_Push(struct vfp_ctx *vc, const struct vfp *vfp)
 {

@@ -16,6 +16,7 @@ nobase_pkginclude_HEADERS = \
 	tbl/h2_frames.h \
 	tbl/h2_settings.h \
 	tbl/h2_stream.h \
+	tbl/htc.h \
 	tbl/http_headers.h \
 	tbl/http_response.h \
 	tbl/locks.h \

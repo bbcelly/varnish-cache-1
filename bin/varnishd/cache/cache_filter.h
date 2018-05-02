@@ -82,11 +82,14 @@ struct vfp_ctx {
 
 	struct vfp_entry_s	vfp;
 	struct vfp_entry	*vfp_nxt;
+	unsigned		obj_flags;
 };
 
 enum vfp_status VFP_Suck(struct vfp_ctx *, void *p, ssize_t *lp);
 enum vfp_status VFP_Error(struct vfp_ctx *, const char *fmt, ...)
     v_printflike_(2, 3);
+void VRT_AddVFP(VRT_CTX, const struct vfp *);
+void VRT_RemoveVFP(VRT_CTX, const struct vfp *);
 
 /* Deliver processors ------------------------------------------------*/
 
@@ -120,8 +123,8 @@ struct vdp_ctx {
 #define VDP_CTX_MAGIC		0xee501df7
 	struct vdp_entry_s	vdp;
 	struct vdp_entry	*nxt;
-	unsigned		retval;
+	int			retval;
 };
 
 int VDP_bytes(struct req *, enum vdp_action act, const void *ptr, ssize_t len);
-void VDP_push(struct req *, const struct vdp *, void *priv, int bottom);
+int VDP_push(struct req *, const struct vdp *, void *priv, int bottom);

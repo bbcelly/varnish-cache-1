@@ -32,7 +32,6 @@
 #include <string.h>
 
 #include "cache/cache.h"
-#include "cache/cache_director.h"
 
 #include "vcc_if.h"
 
@@ -45,28 +44,27 @@ struct vmod_directors_round_robin {
 	unsigned				nxt;
 };
 
-static unsigned v_matchproto_(vdi_healthy)
-vmod_rr_healthy(const struct director *dir, const struct busyobj *bo,
-    double *changed)
+static VCL_BOOL v_matchproto_(vdi_healthy)
+vmod_rr_healthy(VRT_CTX, VCL_BACKEND dir, VCL_TIME *changed)
 {
 	struct vmod_directors_round_robin *rr;
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
+	CHECK_OBJ_NOTNULL(dir, DIRECTOR_MAGIC);
 	CAST_OBJ_NOTNULL(rr, dir->priv, VMOD_DIRECTORS_ROUND_ROBIN_MAGIC);
-	return (vdir_any_healthy(rr->vd, bo, changed));
+	return (vdir_any_healthy(ctx, rr->vd, changed));
 }
 
-static const struct director * v_matchproto_(vdi_resolve_f)
-vmod_rr_resolve(const struct director *dir, struct worker *wrk,
-    struct busyobj *bo)
+static VCL_BACKEND v_matchproto_(vdi_resolve_f)
+vmod_rr_resolve(VRT_CTX, VCL_BACKEND dir)
 {
 	struct vmod_directors_round_robin *rr;
 	unsigned u;
 	VCL_BACKEND be = NULL;
 	unsigned nxt;
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	CHECK_OBJ_NOTNULL(dir, DIRECTOR_MAGIC);
-	CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
-	CHECK_OBJ_NOTNULL(bo, BUSYOBJ_MAGIC);
 	CAST_OBJ_NOTNULL(rr, dir->priv, VMOD_DIRECTORS_ROUND_ROBIN_MAGIC);
 	vdir_rdlock(rr->vd);
 	for (u = 0; u < rr->vd->n_backend; u++) {
@@ -74,7 +72,7 @@ vmod_rr_resolve(const struct director *dir, struct worker *wrk,
 		rr->nxt = nxt + 1;
 		be = rr->vd->backend[nxt];
 		CHECK_OBJ_NOTNULL(be, DIRECTOR_MAGIC);
-		if (be->healthy(be, bo, NULL))
+		if (VRT_Healthy(ctx, be, NULL))
 			break;
 	}
 	vdir_unlock(rr->vd);
@@ -82,6 +80,13 @@ vmod_rr_resolve(const struct director *dir, struct worker *wrk,
 		be = NULL;
 	return (be);
 }
+
+static const struct vdi_methods vmod_rr_methods[1] = {{
+	.magic =		VDI_METHODS_MAGIC,
+	.type =			"round-robin",
+	.healthy =		vmod_rr_healthy,
+	.resolve =		vmod_rr_resolve,
+}};
 
 VCL_VOID v_matchproto_()
 vmod_round_robin__init(VRT_CTX,
@@ -95,8 +100,7 @@ vmod_round_robin__init(VRT_CTX,
 	ALLOC_OBJ(rr, VMOD_DIRECTORS_ROUND_ROBIN_MAGIC);
 	AN(rr);
 	*rrp = rr;
-	vdir_new(&rr->vd, "round-robin", vcl_name, vmod_rr_healthy,
-	    vmod_rr_resolve, rr);
+	vdir_new(ctx, &rr->vd, vcl_name, vmod_rr_methods, rr);
 }
 
 VCL_VOID v_matchproto_()

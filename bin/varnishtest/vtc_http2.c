@@ -293,8 +293,7 @@ clean_frame(struct frame **f)
 	if ((*f)->type == TYPE_GOAWAY)
 		free((*f)->md.goaway.debug);
 	free((*f)->data);
-	free(*f);
-	*f = NULL;
+	FREE_OBJ(*f);
 }
 
 static void
@@ -2541,6 +2540,7 @@ static void
 stream_delete(struct stream *s)
 {
 	CHECK_OBJ_NOTNULL(s, STREAM_MAGIC);
+	free(s->body);
 	free(s->spec);
 	free(s->name);
 	FREE_OBJ(s);

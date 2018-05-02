@@ -32,7 +32,6 @@
 #include <string.h>
 
 #include "cache/cache.h"
-#include "cache/cache_director.h"
 
 #include "vcc_if.h"
 
@@ -46,27 +45,26 @@ struct vmod_directors_fallback {
 	unsigned				cur;
 };
 
-static unsigned v_matchproto_(vdi_healthy)
-vmod_fallback_healthy(const struct director *dir, const struct busyobj *bo,
-    double *changed)
+static VCL_BOOL v_matchproto_(vdi_healthy)
+vmod_fallback_healthy(VRT_CTX, VCL_BACKEND dir, VCL_TIME *changed)
 {
 	struct vmod_directors_fallback *fb;
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
+	CHECK_OBJ_NOTNULL(dir, DIRECTOR_MAGIC);
 	CAST_OBJ_NOTNULL(fb, dir->priv, VMOD_DIRECTORS_FALLBACK_MAGIC);
-	return (vdir_any_healthy(fb->vd, bo, changed));
+	return (vdir_any_healthy(ctx, fb->vd, changed));
 }
 
-static const struct director * v_matchproto_(vdi_resolve_f)
-vmod_fallback_resolve(const struct director *dir, struct worker *wrk,
-    struct busyobj *bo)
+static VCL_BACKEND v_matchproto_(vdi_resolve_f)
+vmod_fallback_resolve(VRT_CTX, VCL_BACKEND dir)
 {
 	struct vmod_directors_fallback *fb;
 	unsigned u;
 	VCL_BACKEND be = NULL;
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	CHECK_OBJ_NOTNULL(dir, DIRECTOR_MAGIC);
-	CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
-	CHECK_OBJ_NOTNULL(bo, BUSYOBJ_MAGIC);
 	CAST_OBJ_NOTNULL(fb, dir->priv, VMOD_DIRECTORS_FALLBACK_MAGIC);
 
 	vdir_wrlock(fb->vd);
@@ -75,7 +73,7 @@ vmod_fallback_resolve(const struct director *dir, struct worker *wrk,
 	for (u = 0; u < fb->vd->n_backend; u++) {
 		be = fb->vd->backend[fb->cur];
 		CHECK_OBJ_NOTNULL(be, DIRECTOR_MAGIC);
-		if (be->healthy(be, bo, NULL))
+		if (VRT_Healthy(ctx, be, NULL))
 			break;
 		if (++fb->cur == fb->vd->n_backend)
 			fb->cur = 0;
@@ -85,6 +83,14 @@ vmod_fallback_resolve(const struct director *dir, struct worker *wrk,
 		be = NULL;
 	return (be);
 }
+
+static const struct vdi_methods vmod_fallback_methods[1] = {{
+	.magic =		VDI_METHODS_MAGIC,
+	.type =			"fallback",
+	.healthy =		vmod_fallback_healthy,
+	.resolve =		vmod_fallback_resolve,
+}};
+
 
 VCL_VOID v_matchproto_()
 vmod_fallback__init(VRT_CTX,
@@ -98,8 +104,7 @@ vmod_fallback__init(VRT_CTX,
 	ALLOC_OBJ(fb, VMOD_DIRECTORS_FALLBACK_MAGIC);
 	AN(fb);
 	*fbp = fb;
-	vdir_new(&fb->vd, "fallback", vcl_name, vmod_fallback_healthy,
-	    vmod_fallback_resolve, fb);
+	vdir_new(ctx, &fb->vd, vcl_name, vmod_fallback_methods, fb);
 	fb->st = sticky;
 }
 

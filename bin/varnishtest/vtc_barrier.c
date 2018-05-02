@@ -137,7 +137,7 @@ barrier_sock_thread(void *priv)
 	AZ(pthread_mutex_lock(&b->mtx));
 
 	vl = vtc_logopen(b->name);
-	AN(vl);
+	pthread_cleanup_push(vtc_logclose, vl);
 
 	sock = VTCP_listen_on("127.0.0.1:0", NULL, b->expected, &err);
 	if (sock < 0) {
@@ -219,7 +219,7 @@ barrier_sock_thread(void *priv)
 	macro_undef(vl, b->name, "sock");
 	closefd(&sock);
 	free(conns);
-
+	pthread_cleanup_pop(1);
 	return (NULL);
 }
 
@@ -277,8 +277,7 @@ barrier_cond_sync(struct barrier *b, struct vtclog *vl)
 	if (++b->waiters == b->expected) {
 		vtc_log(vl, 4, "Barrier(%s) wake %u", b->name, b->expected);
 		AZ(pthread_cond_broadcast(&b->cond));
-	}
-	else {
+	} else {
 		vtc_log(vl, 4, "Barrier(%s) wait %u of %u",
 		    b->name, b->waiters, b->expected);
 		AZ(pthread_cond_wait(&b->cond, &b->mtx));

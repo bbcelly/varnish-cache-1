@@ -37,7 +37,6 @@
 
 #include "vcl.h"
 
-#include "cache_director.h"
 #include "vrt_obj.h"
 
 static char vrt_hostname[255] = "";
@@ -337,7 +336,7 @@ VRT_r_beresp_backend_ip(VRT_CTX)
 
 	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	CHECK_OBJ_NOTNULL(ctx->bo, BUSYOBJ_MAGIC);
-	return (VDI_GetIP(ctx->bo->wrk, ctx->bo));
+	return (VDI_GetIP(ctx->bo));
 }
 
 /*--------------------------------------------------------------------*/
@@ -411,8 +410,8 @@ VRT_l_beresp_storage_hint(VRT_CTX, const char *str, ...)
 
 	if (p == NULL) {
 		VSLb(ctx->vsl, SLT_LostHeader, "storage_hint");
-		WS_MarkOverflow(ctx->ws);
 		WS_Reset(ctx->ws, sn);
+		WS_MarkOverflow(ctx->ws);
 		return;
 	}
 
@@ -913,3 +912,35 @@ HTTP_VAR(req)
 HTTP_VAR(resp)
 HTTP_VAR(bereq)
 HTTP_VAR(beresp)
+
+/*--------------------------------------------------------------------*/
+
+VCL_STRING
+VRT_r_beresp_filters(VRT_CTX)
+{
+
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
+	CHECK_OBJ_NOTNULL(ctx->bo, BUSYOBJ_MAGIC);
+	if (ctx->bo->filter_list != NULL)
+		return(ctx->bo->filter_list);
+	/* We do not set bo->filter_list yet, things might still change */
+	return (VBF_Get_Filter_List(ctx->bo));
+}
+
+VCL_VOID
+VRT_l_beresp_filters(VRT_CTX, const char *str, ...)
+{
+	va_list ap;
+	const char *b;
+
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
+	CHECK_OBJ_NOTNULL(ctx->bo, BUSYOBJ_MAGIC);
+	va_start(ap, str);
+	b = VRT_String(ctx->bo->ws, NULL, str, ap);
+	va_end(ap);
+	if (b == NULL) {
+		WS_MarkOverflow(ctx->bo->ws);
+		return;
+	}
+	ctx->bo->filter_list = b;
+}

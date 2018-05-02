@@ -102,7 +102,7 @@ THR_SetName(const char *name)
 
 	AZ(pthread_setspecific(name_key, name));
 #if defined(HAVE_PTHREAD_SET_NAME_NP)
-	(void)pthread_set_name_np(pthread_self(), name);
+	pthread_set_name_np(pthread_self(), name);
 #elif defined(HAVE_PTHREAD_SETNAME_NP)
 #if defined(__APPLE__)
 	(void)pthread_setname_np(name);
@@ -235,17 +235,36 @@ child_signal_handler(int s, siginfo_t *si, void *c)
 {
 	char buf[1024];
 	struct sigaction sa;
+	struct req *req;
+	const char *a, *p, *info = NULL;
 
 	(void)c;
-
 	/* Don't come back */
 	memset(&sa, 0, sizeof sa);
 	sa.sa_handler = SIG_DFL;
 	(void)sigaction(SIGSEGV, &sa, NULL);
 	(void)sigaction(SIGABRT, &sa, NULL);
 
-	bprintf(buf, "Signal %d (%s) received at %p si_code %d",
-		s, strsignal(s), si->si_addr, si->si_code);
+	while (s == SIGSEGV) {
+		req = THR_GetRequest();
+		if (req == NULL || req->wrk == NULL)
+			break;
+		a = TRUST_ME(si->si_addr);
+		p = TRUST_ME(req->wrk);
+		p += sizeof *req->wrk;
+		// rough safe estimate - top of stack
+		if (a > p + cache_param->wthread_stacksize)
+			break;
+		if (a < p - 2 * cache_param->wthread_stacksize)
+			break;
+		info = "\nTHIS PROBABLY IS A STACK OVERFLOW - "
+			"check thread_pool_stack parameter";
+		break;
+	}
+	bprintf(buf, "Signal %d (%s) received at %p si_code %d%s",
+		s, strsignal(s), si->si_addr, si->si_code,
+		info ? info : "");
+
 	VAS_Fail(__func__,
 		 __FILE__,
 		 __LINE__,
@@ -332,6 +351,7 @@ child_main(int sigmagic, size_t altstksz)
 	ObjInit();
 
 	VCL_Init();
+	VCL_VRT_Init();
 
 	HTTP_Init();
 

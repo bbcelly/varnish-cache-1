@@ -44,6 +44,7 @@ varnishd_SOURCES = \
 	cache/cache_tcp_pool.c \
 	cache/cache_vary.c \
 	cache/cache_vcl.c \
+	cache/cache_vcl_vrt.c \
 	cache/cache_vrt.c \
 	cache/cache_vrt_priv.c \
 	cache/cache_vrt_re.c \
@@ -125,6 +126,7 @@ noinst_HEADERS = \
 	cache/cache_pool.h \
 	cache/cache_tcp_pool.h \
 	cache/cache_transport.h \
+	cache/cache_vcl.h \
 	cache/cache_vgz.h \
 	common/heritage.h \
 	common/vsmw.h \
@@ -192,6 +194,16 @@ vhp_decode_test_CFLAGS = @SAN_CFLAGS@ \
 vhp_decode_test_LDADD = \
 	$(top_builddir)/lib/libvarnish/libvarnish.a
 
+noinst_PROGRAMS += esi_parse_fuzzer
+esi_parse_fuzzer_SOURCES = \
+	cache/cache_esi_parse.c \
+	fuzzers/esi_parse_fuzzer.c
+esi_parse_fuzzer_CFLAGS = \
+	@SAN_CFLAGS@ -DNOT_IN_A_VMOD -DTEST_DRIVER -include config.h
+esi_parse_fuzzer_LDADD = \
+	$(top_builddir)/lib/libvarnish/libvarnish.a \
+	$(top_builddir)/lib/libvgz/libvgz.a
+
 TESTS = vhp_table_test vhp_decode_test
 
 #
@@ -217,7 +229,7 @@ EXTRA_DIST = builtin.vcl
 
 vhp_hufdec.h: vhp_gen_hufdec
 	$(AM_V_GEN) ./vhp_gen_hufdec > vhp_hufdec.h_
-	mv vhp_hufdec.h_ vhp_hufdec.h
+	mv -f vhp_hufdec.h_ vhp_hufdec.h
 
 DISTCLEANFILES = builtin_vcl.c
 

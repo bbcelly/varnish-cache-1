@@ -191,8 +191,10 @@ logexp_delete(struct logexp *le)
 	AZ(le->vslq);
 	logexp_delete_tests(le);
 	free(le->name);
+	free(le->vname);
 	free(le->query);
 	VSM_Destroy(&le->vsm);
+	vtc_logclose(le->vl);
 	FREE_OBJ(le);
 }
 

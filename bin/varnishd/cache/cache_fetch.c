@@ -30,7 +30,6 @@
 #include "config.h"
 
 #include "cache_varnishd.h"
-#include "cache_director.h"
 #include "cache_filter.h"
 #include "cache_objhead.h"
 #include "hash/hash_slinger.h"
@@ -240,6 +239,7 @@ vbf_stp_retry(struct worker *wrk, struct busyobj *bo)
 	bo->storage = NULL;
 	bo->do_esi = 0;
 	bo->do_stream = 1;
+	bo->filter_list = NULL;
 
 	// XXX: BereqEnd + BereqAcct ?
 	VSL_ChgId(bo->vsl, "bereq", "retry", VXID_Get(wrk, VSL_BACKENDMARKER));
@@ -289,7 +289,7 @@ vbf_stp_startfetch(struct worker *wrk, struct busyobj *bo)
 	bo->vfc->resp = bo->beresp;
 	bo->vfc->req = bo->bereq;
 
-	i = VDI_GetHdr(wrk, bo);
+	i = VDI_GetHdr(bo);
 
 	now = W_TIM_real(wrk);
 	VSLb_ts_busyobj(bo, "Beresp", now);
@@ -303,7 +303,7 @@ vbf_stp_startfetch(struct worker *wrk, struct busyobj *bo)
 
 	if (bo->htc->body_status == BS_ERROR) {
 		bo->htc->doclose = SC_RX_BODY;
-		VDI_Finish(bo->wrk, bo);
+		VDI_Finish(bo);
 		VSLb(bo->vsl, SLT_Error, "Body cannot be fetched");
 		assert(bo->director_state == DIR_S_NULL);
 		return (F_STP_ERROR);
@@ -374,7 +374,7 @@ vbf_stp_startfetch(struct worker *wrk, struct busyobj *bo)
 			VSLb(bo->vsl, SLT_Error,
 			    "304 response but not conditional fetch");
 			bo->htc->doclose = SC_RX_BAD;
-			VDI_Finish(bo->wrk, bo);
+			VDI_Finish(bo);
 			return (F_STP_ERROR);
 		}
 	}
@@ -383,7 +383,7 @@ vbf_stp_startfetch(struct worker *wrk, struct busyobj *bo)
 
 	if (wrk->handling == VCL_RET_ABANDON || wrk->handling == VCL_RET_FAIL) {
 		bo->htc->doclose = SC_RESP_CLOSE;
-		VDI_Finish(bo->wrk, bo);
+		VDI_Finish(bo);
 		return (F_STP_FAIL);
 	}
 
@@ -391,7 +391,7 @@ vbf_stp_startfetch(struct worker *wrk, struct busyobj *bo)
 		if (bo->htc->body_status != BS_NONE)
 			bo->htc->doclose = SC_RESP_CLOSE;
 		if (bo->director_state != DIR_S_NULL)
-			VDI_Finish(bo->wrk, bo);
+			VDI_Finish(bo);
 
 		if (bo->retries++ < cache_param->max_retries)
 			return (F_STP_RETRY);
@@ -482,7 +482,7 @@ vbf_stp_fetchbody(struct worker *wrk, struct busyobj *bo)
 		(void)VFP_Error(vfc, "Fetch pipeline failed to process");
 		bo->htc->doclose = SC_RX_BODY;
 		VFP_Close(vfc);
-		VDI_Finish(wrk, bo);
+		VDI_Finish(bo);
 		if (!bo->do_stream) {
 			assert(bo->fetch_objcore->boc->state < BOS_STREAM);
 			// XXX: doclose = ?
@@ -500,9 +500,13 @@ vbf_stp_fetchbody(struct worker *wrk, struct busyobj *bo)
 /*--------------------------------------------------------------------
  */
 
-static int
-vbf_figure_out_vfp(struct busyobj *bo)
+static void
+vbf_default_filter_list(const struct busyobj *bo, struct vsb *vsb)
 {
+	const char *p;
+	int do_gzip = bo->do_gzip;
+	int do_gunzip = bo->do_gunzip;
+	int is_gzip = 0, is_gunzip = 0;
 
 	/*
 	 * The VCL variables beresp.do_g[un]zip tells us how we want the
@@ -514,67 +518,73 @@ vbf_figure_out_vfp(struct busyobj *bo)
 	 *	"Content-Encoding: gzip"	--> object is gzip'ed.
 	 *	no Content-Encoding		--> object is not gzip'ed.
 	 *	anything else			--> do nothing wrt gzip
-	 *
-	 * On partial responses (206 on pass), we fail if do_esi is
-	 * requested because it could leak partial esi-directives, and
-	 * ignore gzipery, because it makes no sense.
-	 *
 	 */
 
-	if (http_GetStatus(bo->beresp) == 206) {
-		if (bo->do_esi) {
-			VSLb(bo->vsl, SLT_VCL_Error,
-			    "beresp.do_esi on partial response");
-			return (-1);
-		}
-		bo->do_gzip = bo->do_gunzip = 0;
-		return (0);
-	}
-
 	/* No body -> done */
-	if (bo->htc->body_status == BS_NONE ||
-	    bo->htc->content_length == 0) {
-		http_Unset(bo->beresp, H_Content_Encoding);
-		bo->do_gzip = bo->do_gunzip = 0;
-		bo->do_stream = 0;
-		return (0);
-	}
+	if (bo->htc->body_status == BS_NONE || bo->htc->content_length == 0)
+		return;
 
 	if (!cache_param->http_gzip_support)
-		bo->do_gzip = bo->do_gunzip = 0;
+		do_gzip = do_gunzip = 0;
 
-	bo->is_gzip = http_HdrIs(bo->beresp, H_Content_Encoding, "gzip");
-	bo->is_gunzip = !http_GetHdr(bo->beresp, H_Content_Encoding, NULL);
-	assert(bo->is_gzip == 0 || bo->is_gunzip == 0);
+	if (http_GetHdr(bo->beresp, H_Content_Encoding, &p))
+		is_gzip = !strcasecmp(p, "gzip");
+	else
+		is_gunzip = 1;
 
 	/* We won't gunzip unless it is gzip'ed */
-	if (bo->do_gunzip && !bo->is_gzip)
-		bo->do_gunzip = 0;
+	if (do_gunzip && !is_gzip)
+		do_gunzip = 0;
 
 	/* We wont gzip unless if it already is gzip'ed */
-	if (bo->do_gzip && !bo->is_gunzip)
-		bo->do_gzip = 0;
+	if (do_gzip && !is_gunzip)
+		do_gzip = 0;
 
-	/* But we can't do both at the same time */
-	assert(bo->do_gzip == 0 || bo->do_gunzip == 0);
+	if (do_gunzip || (is_gzip && bo->do_esi))
+		VSB_cat(vsb, " gunzip");
 
-	if (bo->do_gunzip || (bo->is_gzip && bo->do_esi))
-		if (VFP_Push(bo->vfc, &VFP_gunzip) == NULL)
-			return (-1);
+	if (bo->do_esi && (do_gzip || (is_gzip && !do_gunzip))) {
+		VSB_cat(vsb, " esi_gzip");
+		return;
+	}
 
-	if (bo->do_esi && (bo->do_gzip || (bo->is_gzip && !bo->do_gunzip)))
-		return (VFP_Push(bo->vfc, &VFP_esi_gzip) == NULL ? -1 : 0);
+	if (bo->do_esi) {
+		VSB_cat(vsb, " esi");
+		return;
+	}
 
-	if (bo->do_esi)
-		return (VFP_Push(bo->vfc, &VFP_esi) == NULL ? -1 : 0);
+	if (do_gzip)
+		VSB_cat(vsb, " gzip");
 
-	if (bo->do_gzip)
-		return (VFP_Push(bo->vfc, &VFP_gzip) == NULL ? -1 : 0);
+	if (is_gzip && !do_gunzip)
+		VSB_cat(vsb, " testgunzip");
+}
 
-	if (bo->is_gzip && !bo->do_gunzip)
-		return (VFP_Push(bo->vfc, &VFP_testgunzip) == NULL ? -1 : 0);
+const char *
+VBF_Get_Filter_List(struct busyobj *bo)
+{
+	unsigned u;
+	struct vsb vsb[1];
 
-	return (0);
+	u = WS_Reserve(bo->ws, 0);
+	if (u == 0) {
+		WS_Release(bo->ws, 0);
+		WS_MarkOverflow(bo->ws);
+		return (NULL);
+	}
+	AN(VSB_new(vsb, bo->ws->f, u, VSB_FIXEDLEN));
+	vbf_default_filter_list(bo, vsb);
+	if (VSB_finish(vsb)) {
+		WS_Release(bo->ws, 0);
+		WS_MarkOverflow(bo->ws);
+		return (NULL);
+	}
+	if (VSB_len(vsb)) {
+		WS_Release(bo->ws, VSB_len(vsb) + 1);
+		return (VSB_data(vsb) + 1);
+	}
+	WS_Release(bo->ws, 0);
+	return ("");
 }
 
 static enum fetch_step
@@ -588,9 +598,20 @@ vbf_stp_fetch(struct worker *wrk, struct busyobj *bo)
 
 	assert(wrk->handling == VCL_RET_DELIVER);
 
-	if (vbf_figure_out_vfp(bo)) {
+	/* No body -> done */
+	if (bo->htc->body_status == BS_NONE || bo->htc->content_length == 0) {
+		http_Unset(bo->beresp, H_Content_Encoding);
+		bo->do_gzip = bo->do_gunzip = 0;
+		bo->do_stream = 0;
+		bo->filter_list = "";
+	} else if (bo->filter_list == NULL) {
+		bo->filter_list = VBF_Get_Filter_List(bo);
+	}
+
+	if (bo->filter_list == NULL ||
+	    VCL_StackVFP(bo->vfc, bo->vcl, bo->filter_list)) {
 		(bo)->htc->doclose = SC_OVERLOAD;
-		VDI_Finish((bo)->wrk, bo);
+		VDI_Finish(bo);
 		return (F_STP_ERROR);
 	}
 
@@ -602,7 +623,7 @@ vbf_stp_fetch(struct worker *wrk, struct busyobj *bo)
 	if (VFP_Open(bo->vfc)) {
 		(void)VFP_Error(bo->vfc, "Fetch pipeline failed to open");
 		bo->htc->doclose = SC_RX_BODY;
-		VDI_Finish(bo->wrk, bo);
+		VDI_Finish(bo);
 		return (F_STP_ERROR);
 	}
 
@@ -610,18 +631,14 @@ vbf_stp_fetch(struct worker *wrk, struct busyobj *bo)
 		(void)VFP_Error(bo->vfc, "Could not get storage");
 		bo->htc->doclose = SC_RX_BODY;
 		VFP_Close(bo->vfc);
-		VDI_Finish(bo->wrk, bo);
+		VDI_Finish(bo);
 		return (F_STP_ERROR);
 	}
 
-	if (bo->do_esi)
-		ObjSetFlag(bo->wrk, bo->fetch_objcore, OF_ESIPROC, 1);
-
-	if (bo->do_gzip || (bo->is_gzip && !bo->do_gunzip))
-		ObjSetFlag(bo->wrk, bo->fetch_objcore, OF_GZIPED, 1);
-
-	if (bo->do_gzip || bo->do_gunzip)
-		ObjSetFlag(bo->wrk, bo->fetch_objcore, OF_CHGGZIP, 1);
+#define OBJ_FLAG(U, l, v)						\
+	if (bo->vfc->obj_flags & OF_##U)				\
+		ObjSetFlag(bo->wrk, bo->fetch_objcore, OF_##U, 1);
+#include "tbl/obj_attr.h"
 
 	if (!(bo->fetch_objcore->flags & OC_F_PASS) &&
 	    http_IsStatus(bo->beresp, 200) && (
@@ -630,12 +647,12 @@ vbf_stp_fetch(struct worker *wrk, struct busyobj *bo)
 		ObjSetFlag(bo->wrk, bo->fetch_objcore, OF_IMSCAND, 1);
 
 	if (bo->htc->body_status != BS_NONE &&
-	    VDI_GetBody(bo->wrk, bo) != 0) {
+	    VDI_GetBody(bo) != 0) {
 		(void)VFP_Error(bo->vfc,
 		    "GetBody failed - workspace_backend overflow?");
 		VFP_Close(bo->vfc);
 		bo->htc->doclose = SC_OVERLOAD;
-		VDI_Finish(bo->wrk, bo);
+		VDI_Finish(bo);
 		return (F_STP_ERROR);
 	}
 
@@ -680,7 +697,7 @@ vbf_stp_fetchend(struct worker *wrk, struct busyobj *bo)
 
 	/* Recycle the backend connection before setting BOS_FINISHED to
 	   give predictable backend reuse behavior for varnishtest */
-	VDI_Finish(bo->wrk, bo);
+	VDI_Finish(bo);
 
 	ObjSetState(wrk, bo->fetch_objcore, BOS_FINISHED);
 	VSLb_ts_busyobj(bo, "BerespBody", W_TIM_real(wrk));
@@ -745,7 +762,7 @@ vbf_stp_condfetch(struct worker *wrk, struct busyobj *bo)
 	if (bo->stale_oc->flags & OC_F_FAILED)
 		(void)VFP_Error(bo->vfc, "Template object failed");
 	if (bo->vfc->failed) {
-		VDI_Finish(bo->wrk, bo);
+		VDI_Finish(bo);
 		wrk->stats->fetch_failed++;
 		return (F_STP_FAIL);
 	}

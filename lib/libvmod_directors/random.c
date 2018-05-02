@@ -31,7 +31,6 @@
 #include <stdlib.h>
 
 #include "cache/cache.h"
-#include "cache/cache_director.h"
 
 #include "vbm.h"
 #include "vrnd.h"
@@ -46,33 +45,40 @@ struct vmod_directors_random {
 	struct vdir				*vd;
 };
 
-static unsigned v_matchproto_(vdi_healthy)
-vmod_random_healthy(const struct director *dir, const struct busyobj *bo,
-    double *changed)
+static VCL_BOOL v_matchproto_(vdi_healthy)
+vmod_random_healthy(VRT_CTX, VCL_BACKEND dir, VCL_TIME *changed)
 {
 	struct vmod_directors_random *rr;
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
+	CHECK_OBJ_NOTNULL(dir, DIRECTOR_MAGIC);
 	CAST_OBJ_NOTNULL(rr, dir->priv, VMOD_DIRECTORS_RANDOM_MAGIC);
-	return (vdir_any_healthy(rr->vd, bo, changed));
+	return (vdir_any_healthy(ctx, rr->vd, changed));
 }
 
-static const struct director * v_matchproto_(vdi_resolve_f)
-vmod_random_resolve(const struct director *dir, struct worker *wrk,
-    struct busyobj *bo)
+static VCL_BACKEND v_matchproto_(vdi_resolve_f)
+vmod_random_resolve(VRT_CTX, VCL_BACKEND dir)
 {
 	struct vmod_directors_random *rr;
 	VCL_BACKEND be;
 	double r;
 
+	CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 	CHECK_OBJ_NOTNULL(dir, DIRECTOR_MAGIC);
-	CHECK_OBJ_NOTNULL(wrk, WORKER_MAGIC);
-	CHECK_OBJ_NOTNULL(bo, BUSYOBJ_MAGIC);
 	CAST_OBJ_NOTNULL(rr, dir->priv, VMOD_DIRECTORS_RANDOM_MAGIC);
 	r = scalbn(VRND_RandomTestable(), -31);
 	assert(r >= 0 && r < 1.0);
-	be = vdir_pick_be(rr->vd, r, bo);
+	be = vdir_pick_be(ctx, rr->vd, r);
 	return (be);
 }
+
+static const struct vdi_methods vmod_random_methods[1] = {{
+	.magic =		VDI_METHODS_MAGIC,
+	.type =			"random",
+	.healthy =		vmod_random_healthy,
+	.resolve =		vmod_random_resolve,
+}};
+
 
 VCL_VOID v_matchproto_()
 vmod_random__init(VRT_CTX, struct vmod_directors_random **rrp,
@@ -86,8 +92,7 @@ vmod_random__init(VRT_CTX, struct vmod_directors_random **rrp,
 	ALLOC_OBJ(rr, VMOD_DIRECTORS_RANDOM_MAGIC);
 	AN(rr);
 	*rrp = rr;
-	vdir_new(&rr->vd, "random", vcl_name, vmod_random_healthy,
-	    vmod_random_resolve, rr);
+	vdir_new(ctx, &rr->vd, vcl_name, vmod_random_methods, rr);
 }
 
 VCL_VOID v_matchproto_()

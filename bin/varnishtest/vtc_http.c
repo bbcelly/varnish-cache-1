@@ -884,6 +884,7 @@ http_tx_parse_args(char * const *av, struct vtclog *vl, struct http *hp,
 			}
 		} else if (!strcmp(*av, "-bodylen")) {
 			assert(body == nullbody);
+			free(body);
 			body = synth_body(av[1], 0);
 			bodylen = strlen(body);
 			av++;
@@ -895,13 +896,16 @@ http_tx_parse_args(char * const *av, struct vtclog *vl, struct http *hp,
 			av++;
 		} else if (!strcmp(*av, "-gziplen")) {
 			assert(body == nullbody);
+			free(body);
 			b = synth_body(av[1], 1);
 			gzip_body(hp, b, &body, &bodylen);
+			free(b);
 			VSB_printf(hp->vsb, "Content-Encoding: gzip%s", nl);
 			// vtc_hexdump(hp->vl, 4, "gzip", (void*)body, bodylen);
 			av++;
 		} else if (!strcmp(*av, "-gzipbody")) {
 			assert(body == nullbody);
+			free(body);
 			gzip_body(hp, av[1], &body, &bodylen);
 			VSB_printf(hp->vsb, "Content-Encoding: gzip%s", nl);
 			// vtc_hexdump(hp->vl, 4, "gzip", (void*)body, bodylen);
@@ -1861,6 +1865,21 @@ const struct cmds http_cmds[] = {
 	{ NULL, NULL }
 };
 
+static void
+http_process_cleanup(void *arg)
+{
+	struct http *hp = arg;
+
+	if (hp->h2)
+		stop_h2(hp);
+	VSB_destroy(&hp->vsb);
+	free(hp->rxbuf);
+	free(hp->rem_ip);
+	free(hp->rem_port);
+	free(hp->rem_path);
+	FREE_OBJ(hp);
+}
+
 int
 http_process(struct vtclog *vl, const char *spec, int sock, int *sfd,
 	     const char *addr)
@@ -1897,21 +1916,15 @@ http_process(struct vtclog *vl, const char *spec, int sock, int *sfd,
 		VTCP_hisname(sock, hp->rem_ip, VTCP_ADDRBUFSIZE, hp->rem_port,
 			     VTCP_PORTBUFSIZE);
 		hp->rem_path = NULL;
-	}
-	else {
+	} else {
 		strcpy(hp->rem_ip, "0.0.0.0");
 		strcpy(hp->rem_port, "0");
 		hp->rem_path = strdup(addr);
 	}
+	pthread_cleanup_push(http_process_cleanup, hp);
 	parse_string(spec, http_cmds, hp, vl);
-	if (hp->h2)
-		stop_h2(hp);
 	retval = hp->fd;
-	VSB_destroy(&hp->vsb);
-	free(hp->rxbuf);
-	free(hp->rem_ip);
-	free(hp->rem_port);
-	free(hp);
+	pthread_cleanup_pop(1);
 	return (retval);
 }
 

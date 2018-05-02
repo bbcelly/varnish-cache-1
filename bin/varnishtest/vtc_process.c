@@ -88,6 +88,7 @@ struct process {
 
 	int			nlin;
 	int			ncol;
+	int			ansi_response;
 	char			**vram;
 	teken_t			tek[1];
 };
@@ -174,10 +175,12 @@ term_respond(void *priv, const void *p, size_t l)
 	CAST_OBJ_NOTNULL(pp, priv, PROCESS_MAGIC);
 
 	vtc_dump(pp->vl, 4, "term_response", p, l);
-	r = write(pp->fd_term, p, l);
-	if (r != l)
-		vtc_fatal(pp->vl, "Could not write to process: %s",
-		    strerror(errno));
+	if (pp->ansi_response) {
+		r = write(pp->fd_term, p, l);
+		if (r != l)
+			vtc_fatal(pp->vl, "Could not write to process: %s",
+			    strerror(errno));
+	}
 }
 
 static void
@@ -205,9 +208,13 @@ static void
 term_screen_dump(const struct process *pp)
 {
 	int i;
+	const teken_pos_t *pos;
 
 	for (i = 0; i < pp->nlin; i++)
 		vtc_dump(pp->vl, 3, "screen", pp->vram[i], pp->ncol);
+	pos = teken_get_cursor(pp->tek);
+	vtc_log(pp->vl, 3, "Cursor at line %d column %d",
+	    pos->tp_row + 1, pos->tp_col + 1);
 }
 
 static void
@@ -312,6 +319,23 @@ term_expect_text(struct process *pp,
 	vtc_log(pp->vl, 4, "found expected text at %d,%d: '%s'", y, x, pat);
 }
 
+static void
+term_expect_cursor(struct process *pp, const char *lin, const char *col)
+{
+	int x, y;
+	const teken_pos_t *pos;
+
+	pos = teken_get_cursor(pp->tek);
+	y = strtoul(lin, NULL, 0);
+	x = strtoul(col, NULL, 0);
+	if (y != 0 && (y-1) != pos->tp_row)
+		vtc_fatal(pp->vl, "Cursor on line %d (expected %d)",
+		    pos->tp_row + 1, y);
+	if (x != 0 && (x-1) != pos->tp_col)
+		vtc_fatal(pp->vl, "Cursor in column %d (expected %d)",
+		    pos->tp_col + 1, y);
+}
+
 /**********************************************************************
  * Allocate and initialize a process
  */
@@ -324,6 +348,30 @@ term_expect_text(struct process *pp,
 		AN(p->field);						\
 		VSB_destroy(&vsb);					\
 	} while (0)
+
+static void
+process_coverage(struct process *p)
+{
+	const teken_attr_t *a;
+	teken_pos_t pos;
+	int fg, bg;
+
+	// Code-Coverage of Teken
+
+	(void)teken_get_sequence(p->tek, TKEY_UP);
+	(void)teken_get_sequence(p->tek, TKEY_F1);
+	(void)teken_256to8(0);
+	(void)teken_256to16(0);
+	a = teken_get_defattr(p->tek);
+	teken_set_defattr(p->tek, a);
+	a = teken_get_curattr(p->tek);
+	teken_set_curattr(p->tek, a);
+	(void)teken_get_winsize(p->tek);
+	pos.tp_row = 0;
+	pos.tp_col = 8;
+	teken_set_cursor(p->tek, &pos);
+	teken_get_defattr_cons25(p->tek, &fg, &bg);
+}
 
 static struct process *
 process_new(const char *name)
@@ -353,6 +401,7 @@ process_new(const char *name)
 	VTAILQ_INSERT_TAIL(&processes, p, list);
 	teken_init(p->tek, &process_teken_func, p);
 	term_resize(p, 24, 80);
+	process_coverage(p);
 	return (p);
 }
 
@@ -365,6 +414,7 @@ process_new(const char *name)
 static void
 process_delete(struct process *p)
 {
+	int i;
 
 	CHECK_OBJ_NOTNULL(p, PROCESS_MAGIC);
 	AZ(pthread_mutex_destroy(&p->mtx));
@@ -373,6 +423,10 @@ process_delete(struct process *p)
 	free(p->dir);
 	free(p->out);
 	free(p->err);
+
+	for (i = 0; i < p->nlin; i++)
+		free(p->vram[i]);
+	free(p->vram);
 
 	/*
 	 * We do not delete the directory, it may contain useful stdout
@@ -431,7 +485,7 @@ process_stdout(const struct vev *ev, int what)
 		vtc_dump(p->vl, 4, "stdout", buf, i);
 	else if (p->log == 3)
 		vtc_hexdump(p->vl, 4, "stdout", buf, i);
-	(void)write(p->f_stdout, buf, i);
+	assert(write(p->f_stdout, buf, i) == i);
 	AZ(pthread_mutex_lock(&p->mtx));
 	teken_input(p->tek, buf, i);
 	AZ(pthread_mutex_unlock(&p->mtx));
@@ -456,7 +510,7 @@ process_stderr(const struct vev *ev, int what)
 	p->stderr_bytes += i;
 	AZ(pthread_mutex_unlock(&p->mtx));
 	vtc_dump(p->vl, 4, "stderr", buf, i);
-	(void)write(p->f_stderr, buf, i);
+	assert(write(p->f_stderr, buf, i) == i);
 	return (0);
 }
 
@@ -704,9 +758,8 @@ process_kill(struct process *p, const char *sig)
 	if (kill(-pid, j) < 0)
 		vtc_fatal(p->vl, "Failed to send signal %d (%s)",
 		    j, strerror(errno));
-	else {
+	else
 		vtc_log(p->vl, 4, "Sent signal %d", j);
-	}
 }
 
 /**********************************************************************
@@ -960,6 +1013,10 @@ cmd_process(CMD_ARGS)
 			process_wait(p);
 			continue;
 		}
+		if (!strcmp(*av, "-ansi-response")) {
+			p->ansi_response = 1;
+			continue;
+		}
 		if (!strcmp(*av, "-expect-text")) {
 			AN(av[1]);
 			AN(av[2]);
@@ -968,7 +1025,15 @@ cmd_process(CMD_ARGS)
 			av += 3;
 			continue;
 		}
-		if (!strcmp(*av, "-screen_dump")) {
+		if (!strcmp(*av, "-expect-cursor")) {
+			AN(av[1]);
+			AN(av[2]);
+			term_expect_cursor(p, av[1], av[2]);
+			av += 2;
+			continue;
+		}
+		if (!strcmp(*av, "-screen_dump") ||
+		    !strcmp(*av, "-screen-dump")) {
 			term_screen_dump(p);
 			continue;
 		}
