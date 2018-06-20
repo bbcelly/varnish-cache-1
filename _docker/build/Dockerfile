@@ -1,4 +1,4 @@
-FROM stackbrew/debian:wheezy
+FROM debian:stretch
 MAINTAINER Pavel Cvetler <pavel.cvetler@livesport.eu>
 
 # Basic environtment
